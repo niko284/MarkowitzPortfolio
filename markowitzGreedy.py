@@ -8,8 +8,8 @@ from scipy.optimize import minimize
 scraperURL = 'https://en.wikipedia.org/wiki/List_of_S%26P_500_companies'
 scrapedData = pd.read_html(scraperURL)
 
-startDate = '2019-12-01'
-endDate = pd.to_datetime(startDate) + pd.DateOffset(365*5)
+startDate = '2018-01-02'
+endDate = '2021-01-04'
 
 sp500 = scrapedData[0]
 sp500['Date added'] = pd.to_datetime(sp500['Date added'], errors='coerce')
@@ -56,7 +56,7 @@ def selectLeastGroupCorrelatedTickers(correlationMatrix, top_n):
     return selected_tickers
 
 # Get the top "tickerAmount" least group-correlated tickers
-tickerAmount = 7
+tickerAmount = 6
 top_least_group_correlated_tickers = selectLeastGroupCorrelatedTickers(correlationMatrix, tickerAmount)
 
 # Filter the data to include only the selected tickers
@@ -110,19 +110,70 @@ def simulatePortfolios(numberOfRandomPortfolios):
     portfolioRisks = []
     portfolioReturns = []
     portfolioSharpes = []
+    weights = []
     for _ in range(numberOfRandomPortfolios):
         randomAssetWeights = generateRandomWeights(len(tickers))
         portfolioStatistics = getPortfolioStatistics(randomAssetWeights)
         portfolioRisks.append(portfolioStatistics['risk'])
         portfolioReturns.append(portfolioStatistics['return'])
         portfolioSharpes.append(portfolioStatistics['sharpe'])
-    return np.array(portfolioRisks), np.array(portfolioReturns), np.array(portfolioSharpes)
+        weights.append(randomAssetWeights)
+    return {
+        'risks': np.array(portfolioRisks),
+        'returns': np.array(portfolioReturns),
+        'sharpes': np.array(portfolioSharpes),
+        'weights': np.array(weights)
+    }
 
-simulatedRisks, simulatedReturns, sharpeRatios = simulatePortfolios(1000000)
+simulatedPortfolios = simulatePortfolios(10000)
+sharpeRatios = simulatedPortfolios['sharpes']
+simulatedReturns = simulatedPortfolios['returns']
+simulatedRisks = simulatedPortfolios['risks']
 
 # Get the sharpe ratio for each portfolio.
-max_sr_ret = simulatedReturns[sharpeRatios.argmax()] # return corresponding to maximum sharpe ratio
-max_sr_vol = simulatedRisks[sharpeRatios.argmax()] # risk corresponding to maximum sharpe ratio
+
+portfolioIndex = sharpeRatios.argmax()
+max_sr_ret = simulatedReturns[portfolioIndex] # return corresponding to maximum sharpe ratio
+max_sr_vol = simulatedRisks[portfolioIndex] # risk corresponding to maximum sharpe ratio
+max_sr_weights = simulatedPortfolios['weights'][portfolioIndex]
+
+# map the array to a dictionary with the tickers as keys and the weights as values but convert from np.float to regular float
+
+max_sr_weights_dict = {ticker: float(weight) for ticker, weight in zip(tickers, max_sr_weights)}
+
+# We need to get new adjusted close prices to test our weights on. We will use from january 4th 2021 to january 2nd 2024.
+
+newStartDate = '2021-01-04'
+newEndDate = '2024-01-02'
+
+newStockData = yf.download(tickers=tickers, start=newStartDate, end=newEndDate).stack()
+newStockData.index.names = ['date', 'ticker']
+newStockData.columns = newStockData.columns.str.lower()
+
+newData = newStockData['adj close'].unstack(level='ticker')
+
+# Filter the data to include only the selected tickers
+
+newFilteredData = newData[top_least_group_correlated_tickers]
+
+# First, we calculate the adjusted close multiplied by the weights for the first day of the data.
+# This gets the portfolio value on the first day. (for the max sharpe ratio portfolio)
+
+print("Tickers in the portfolio: ", max_sr_weights_dict)
+
+initial_portfolio_value = np.sum(newFilteredData.loc[newFilteredData.index[0]] * max_sr_weights)
+print("Initial Portfolio Value: ", initial_portfolio_value)
+
+# Next, we calculate the portfolio's value on the last day of the data.
+# We multiply the adjusted close by the weights for the last day of the data.
+
+final_portfolio_value = np.sum(newFilteredData.loc[newFilteredData.index[-1]] * max_sr_weights)
+print("Final Portfolio Value: ", final_portfolio_value)
+
+# We calculate the return of the portfolio by finding the percentage change in the portfolio value.
+returnOnPortfolio = (final_portfolio_value - initial_portfolio_value) / initial_portfolio_value * 100
+
+print("Return on Portfolio: ", returnOnPortfolio , "%")
 
 plt.figure(figsize=(18,10))
 plt.scatter(simulatedRisks, simulatedReturns, c=sharpeRatios, cmap='viridis')
