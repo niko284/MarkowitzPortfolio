@@ -2,88 +2,90 @@ import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
 import yfinance as yf
-from scipy.optimize import minimize
 
+# Scrape S&P 500 tickers from Wikipedia
 scraperURL = 'https://en.wikipedia.org/wiki/List_of_S%26P_500_companies'
 scrapedData = pd.read_html(scraperURL)
 
+# Set the start and end date for the 5-year analysis
 startDate = '2019-12-01'
 endDate = pd.to_datetime(startDate) + pd.DateOffset(365*5)
 
+# Filter tickers based on "Date added" prior to startDate
 sp500 = scrapedData[0]
 sp500['Date added'] = pd.to_datetime(sp500['Date added'], errors='coerce')
 filtered_sp500 = sp500[sp500['Date added'] < startDate].iloc[:, [0,5]]
 
 tickers = filtered_sp500['Symbol'].tolist()
+tickers = [ticker.replace('.', '-') for ticker in tickers]  # Adjust for Yahoo Finance format
 
-tickers = [ticker.replace('.','-') for ticker in tickers] # Yahoo Finance uses dashes instead of dots
+# Download adjusted close price data from Yahoo Finance
+stockData = yf.download(tickers=tickers, start=startDate, end=endDate, group_by='ticker')
 
-tickers = tickers[:400]
+# Check if 'Adj Close' column exists and extract it
+try:
+    data = stockData['Adj Close']
+except KeyError:
+    raise KeyError("'Adj Close' column not found. Verify data structure or check for API changes.")
 
+# Calculate log returns
+logReturns = np.log(data / data.shift(1))
+correlationMatrix = logReturns.corr()
 
-# We get the data from Yahoo Finance for all of the tickers about the adjusted close price
+# Function to select least group-correlated tickers
+def selectLeastGroupCorrelatedTickers(correlationMatrix, top_n):
+    correlationMatrix = correlationMatrix.copy()
+    np.fill_diagonal(correlationMatrix.values, np.nan)  # Ignore self-correlation
 
-stockData = yf.download(tickers=tickers, start=startDate, end=endDate).stack()
-stockData.index.names = ['date', 'ticker']
-stockData.columns = stockData.columns.str.lower()
+    avg_correlation = correlationMatrix.mean(axis=0)
+    selected_tickers = [avg_correlation.idxmin()]
+    remaining_tickers = list(set(correlationMatrix.columns) - set(selected_tickers))
 
-data = stockData['adj close'].unstack(level='ticker')
+    while len(selected_tickers) < top_n and remaining_tickers:
+        group_correlation = correlationMatrix.loc[selected_tickers, remaining_tickers].mean(axis=0)
+        next_ticker = group_correlation.idxmin()
+        selected_tickers.append(next_ticker)
+        remaining_tickers = list(set(remaining_tickers) - {next_ticker})
 
-# Calculate the logarithmic returns of the adjusted close price
+    return selected_tickers
 
-logReturns = np.log(data/data.shift(1))
+# Select top least-correlated tickers
+tickerAmount = 3
+top_least_group_correlated_tickers = selectLeastGroupCorrelatedTickers(correlationMatrix, tickerAmount)
 
-# Then the expected returns from the logarithmic returns. This is the expected daily return of each asset. 
+# Filter the data for selected tickers
+filtered_data = data[top_least_group_correlated_tickers]
+tickers = filtered_data.columns
+logReturns = np.log(filtered_data / filtered_data.shift(1))
+expectedReturns = logReturns.mean() * 252 * 5
+covarianceMatrix = logReturns.cov() * 252 * 5
 
-expectedReturns = logReturns.mean()
-
-# And the covariance matrix from the logarithmic returns
-
-covMatrix = logReturns.cov()
-
-# where E[Ai] is the expected return of the asset i found in the expectedReturns array, and E[Aj] is the expected return of the asset j found in the expectedReturns array.
-
-# We define a function to generate a 1xn tuple of random weights that sum to 1
-
+# Define function to generate random weights
 def generateRandomWeights(n):
     weights = np.random.rand(n)
     weights /= np.sum(weights)
     return weights
 
-# Our start date was Dec 1 2019. At this date, the risk free return rate
-# was around 1.5%, but has increased to 4% at the end of the 5 year period.
-# To avoid obvious bias from too high or too low of a rate, we averaged it 
-# to 2.75% for the 5 year period. This is not the most scientific way, but 
-# it is a good approximation.
+# Set the risk-free rate for the 5-year horizon
+riskFreeRate = 0.0619
 
-riskFreeRate = 0.0275
-
-# Create a function to return a dictionary of metrics for a portfolio (return, risk, and sharpe ratio).
-
+# Function to calculate portfolio statistics
 def getPortfolioStatistics(randomAssetWeights):
-    randomAssetWeights = np.array(randomAssetWeights) # convert the tuple to an array
+    randomAssetWeights = np.array(randomAssetWeights)
+    portfolioReturn = np.sum(expectedReturns * randomAssetWeights)
+    portfolioRisk = np.sqrt(np.dot(randomAssetWeights.T, np.dot(covarianceMatrix, randomAssetWeights)))
+    sharpeRatio = (portfolioReturn - riskFreeRate) / portfolioRisk
 
-    # this is basically the dot product of the expected returns and the random weights, annualized. the summation of the expected returns of the assets weighted by the random weights gives the expected return of the portfolio.
-    portfolioReturn = np.sum(expectedReturns * randomAssetWeights) * 252 * 5 
-    # 5 years for 252 trading days in a year, since we have the daily expected returns.
-    # This is a dot product between the vector of weights, and expected returns. This gets expected portfolio return
-    # With these given weights.
-    portfolioRisk = np.sqrt(np.dot(randomAssetWeights.T, np.dot(covMatrix * 252 * 5, randomAssetWeights)))
-    sharpeRatio = (portfolioReturn - riskFreeRate) / portfolioRisk # We calculate the Sharpe ratio
-    
-    # Return a dictionary of the portfolio metrics
     return {
         'return': portfolioReturn,
         'risk': portfolioRisk,
         'sharpe': sharpeRatio
     }
-    
-# Run a Monte Carlo simulation to generate n random portfolios and store the risk and return values in a list.
 
+# Monte Carlo simulation to generate portfolios
 def simulatePortfolios(numberOfRandomPortfolios):
     portfolioRisks = []
     portfolioReturns = []
-    portfolioSharpes = []
     for _ in range(numberOfRandomPortfolios):
         randomAssetWeights = generateRandomWeights(len(tickers))
         portfolioStatistics = getPortfolioStatistics(randomAssetWeights)
@@ -91,21 +93,21 @@ def simulatePortfolios(numberOfRandomPortfolios):
         portfolioReturns.append(portfolioStatistics['return'])
     return np.array(portfolioRisks), np.array(portfolioReturns)
 
-# We run the simulation with 1000 random portfolios.
+# Run simulation
+simulatedReturns, simulatedRisks = simulatePortfolios(10000)
 
-simulatedReturns, simulatedRisks = simulatePortfolios(100000)
-
-# We plot the simulated portfolios in a scatter plot.
-
-# Get the sharpe ratio for each portfolio.
+# Calculate Sharpe ratios
 sharpeRatio = simulatedReturns / simulatedRisks
-max_sr_ret = simulatedReturns[sharpeRatio.argmax()] # return corresponding to maximum sharpe ratio
-max_sr_vol = simulatedRisks[sharpeRatio.argmax()] # risk corresponding to maximum sharpe ratio
+max_sr_ret = simulatedReturns[sharpeRatio.argmax()]
+max_sr_vol = simulatedRisks[sharpeRatio.argmax()]
 
-plt.figure(figsize=(18,10))
+# Plot the efficient frontier
+plt.figure(figsize=(18, 10))
 plt.scatter(simulatedRisks, simulatedReturns, c=sharpeRatio, cmap='viridis')
 plt.colorbar(label='Sharpe Ratio')
 plt.xlabel('Risk')
 plt.ylabel('Return')
-plt.scatter(max_sr_vol, max_sr_ret,c='red', s=50) # red dot
+plt.scatter(max_sr_vol, max_sr_ret, c='red', s=50, label='Max Sharpe Ratio')
+plt.legend()
+plt.title('Efficient Frontier')
 plt.show()

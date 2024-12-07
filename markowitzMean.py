@@ -18,9 +18,6 @@ tickers = filtered_sp500['Symbol'].tolist()
 
 tickers = [ticker.replace('.','-') for ticker in tickers] # Yahoo Finance uses dashes instead of dots
 
-tickers = tickers[:300]
-
-
 # We get the data from Yahoo Finance for all of the tickers about the adjusted close price
 
 stockData = yf.download(tickers=tickers, start=startDate, end=endDate).stack()
@@ -41,39 +38,37 @@ def selectLeastGroupCorrelatedTickers(correlationMatrix, top_n):
     # Compute average correlation for each ticker
     avg_correlation = correlationMatrix.mean(axis=0)
     
-    # Start with the ticker having the lowest average correlation
-    selected_tickers = [avg_correlation.idxmin()]
-    remaining_tickers = list(set(correlationMatrix.columns) - set(selected_tickers))
+    # sort the average correlation in ascending order
+    avg_correlation = avg_correlation.sort_values()
+
     
-    while len(selected_tickers) < top_n and remaining_tickers:
-        # Calculate average correlation of each remaining ticker with the selected tickers
-        group_correlation = correlationMatrix.loc[selected_tickers, remaining_tickers].mean(axis=0)
-        
-        # Find the ticker with the lowest average group correlation
-        next_ticker = group_correlation.idxmin()
-        selected_tickers.append(next_ticker)
-        remaining_tickers = list(set(remaining_tickers) - {next_ticker})
+    # Pick the top n least correlated tickers
+    
+    selected_tickers = avg_correlation.index[:top_n]
     
     return selected_tickers
 
-# Get the top 100 least group-correlated tickers
-top_least_group_correlated_tickers = selectLeastGroupCorrelatedTickers(correlationMatrix, 5)
+# Get the top "tickerAmount" least group-correlated tickers
+tickerAmount = 5
+top_least_group_correlated_tickers = selectLeastGroupCorrelatedTickers(correlationMatrix, tickerAmount)
 
 # Filter the data to include only the selected tickers
+
+print("Original tickers: ", data.columns)
 
 filtered_data = data[top_least_group_correlated_tickers]
 tickers = filtered_data.columns
 data = filtered_data
 logReturns = np.log(data/data.shift(1))
-expectedReturns = logReturns.mean()
-covarianceMatrix = logReturns.cov()
+expectedReturns = logReturns.mean() * 252
+covarianceMatrix = logReturns.cov() * 252
 
 # where E[Ai] is the expected return of the asset i found in the expectedReturns array, and E[Aj] is the expected return of the asset j found in the expectedReturns array.
 
 # We define a function to generate a 1xn tuple of random weights that sum to 1
 
 def generateRandomWeights(n):
-    weights = np.random.rand(n)
+    weights = np.random.random(n)
     weights /= np.sum(weights)
     return weights
 
@@ -91,11 +86,11 @@ def getPortfolioStatistics(randomAssetWeights):
     randomAssetWeights = np.array(randomAssetWeights) # convert the tuple to an array
 
     # this is basically the dot product of the expected returns and the random weights, annualized. the summation of the expected returns of the assets weighted by the random weights gives the expected return of the portfolio.
-    portfolioReturn = np.sum(expectedReturns * randomAssetWeights) * 252 * 5 
+    portfolioReturn = np.sum(expectedReturns * randomAssetWeights)
     # 5 years for 252 trading days in a year, since we have the daily expected returns.
     # This is a dot product between the vector of weights, and expected returns. This gets expected portfolio return
     # With these given weights.
-    portfolioRisk = np.sqrt(np.dot(randomAssetWeights.T, np.dot(covarianceMatrix * 252 * 5, randomAssetWeights)))
+    portfolioRisk = np.sqrt(np.dot(randomAssetWeights.T, np.dot(covarianceMatrix, randomAssetWeights)))
     sharpeRatio = (portfolioReturn - riskFreeRate) / portfolioRisk # We calculate the Sharpe ratio
     
     # Return a dictionary of the portfolio metrics
@@ -119,7 +114,7 @@ def simulatePortfolios(numberOfRandomPortfolios):
 
 # We run the simulation with 1000 random portfolios.
 
-simulatedReturns, simulatedRisks = simulatePortfolios(1000000)
+simulatedReturns, simulatedRisks = simulatePortfolios(10000)
 
 # We plot the simulated portfolios in a scatter plot.
 
