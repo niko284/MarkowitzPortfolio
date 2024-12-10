@@ -8,8 +8,8 @@ from scipy.optimize import minimize
 scraperURL = 'https://en.wikipedia.org/wiki/List_of_S%26P_500_companies'
 scrapedData = pd.read_html(scraperURL)
 
-startDate = '2018-01-02'
-endDate = '2021-01-04'
+startDate = '2023-09-01'
+endDate = '2023-12-01'
 
 sp500 = scrapedData[0]
 sp500['Date added'] = pd.to_datetime(sp500['Date added'], errors='coerce')
@@ -21,7 +21,7 @@ tickers = [ticker.replace('.','-') for ticker in tickers] # Yahoo Finance uses d
 
 # We get the data from Yahoo Finance for all of the tickers about the adjusted close price
 
-stockData = yf.download(tickers=tickers, start=startDate, end=endDate).stack()
+stockData = yf.download(tickers=tickers, start=startDate, end=endDate).stack(future_stack=True)
 stockData.index.names = ['date', 'ticker']
 stockData.columns = stockData.columns.str.lower()
 
@@ -125,7 +125,7 @@ def simulatePortfolios(numberOfRandomPortfolios):
         'weights': np.array(weights)
     }
 
-simulatedPortfolios = simulatePortfolios(10000)
+simulatedPortfolios = simulatePortfolios(100000)
 sharpeRatios = simulatedPortfolios['sharpes']
 simulatedReturns = simulatedPortfolios['returns']
 simulatedRisks = simulatedPortfolios['risks']
@@ -143,37 +143,38 @@ max_sr_weights_dict = {ticker: float(weight) for ticker, weight in zip(tickers, 
 
 # We need to get new adjusted close prices to test our weights on. We will use from january 4th 2021 to january 2nd 2024.
 
-newStartDate = '2021-01-04'
+# We need to get new adjusted close prices to test our weights on. We will use from january 4th 2021 to january 2nd 2024.
+tickersNew = list(max_sr_weights_dict.keys())
+weights = list(max_sr_weights_dict.values())
+
+newStartDate = '2023-09-01'
 newEndDate = '2024-01-02'
 
-newStockData = yf.download(tickers=tickers, start=newStartDate, end=newEndDate).stack()
-newStockData.index.names = ['date', 'ticker']
-newStockData.columns = newStockData.columns.str.lower()
+# Download historical data for the tickers
+data = yf.download(tickers=tickersNew, start=newStartDate, end=newEndDate)['Adj Close']
 
-newData = newStockData['adj close'].unstack(level='ticker')
+# Calculate daily returns for each stock
+daily_returns = data.pct_change().dropna()
 
-# Filter the data to include only the selected tickers
+# Calculate portfolio daily returns
+portfolio_returns = (daily_returns * weights).sum(axis=1)
 
-newFilteredData = newData[top_least_group_correlated_tickers]
+# Calculate cumulative returns
+cumulative_returns = (1 + portfolio_returns).cumprod()
+equal_weights = [1 / len(tickersNew)] * len(tickersNew)
+equal_portfolio_returns = (daily_returns * equal_weights).sum(axis=1)
+equal_cumulative_returns = (1 + equal_portfolio_returns).cumprod()
 
-# First, we calculate the adjusted close multiplied by the weights for the first day of the data.
-# This gets the portfolio value on the first day. (for the max sharpe ratio portfolio)
-
-print("Tickers in the portfolio: ", max_sr_weights_dict)
-
-initial_portfolio_value = np.sum(newFilteredData.loc[newFilteredData.index[0]] * max_sr_weights)
-print("Initial Portfolio Value: ", initial_portfolio_value)
-
-# Next, we calculate the portfolio's value on the last day of the data.
-# We multiply the adjusted close by the weights for the last day of the data.
-
-final_portfolio_value = np.sum(newFilteredData.loc[newFilteredData.index[-1]] * max_sr_weights)
-print("Final Portfolio Value: ", final_portfolio_value)
-
-# We calculate the return of the portfolio by finding the percentage change in the portfolio value.
-returnOnPortfolio = (final_portfolio_value - initial_portfolio_value) / initial_portfolio_value * 100
-
-print("Return on Portfolio: ", returnOnPortfolio , "%")
+# Plot both cumulative returns
+plt.figure(figsize=(10, 6))
+plt.plot(cumulative_returns, label="Proportionally Weighted Portfolio")
+plt.plot(equal_cumulative_returns, label="Equally Weighted Portfolio", linestyle='--')
+plt.title("Cumulative Returns: Proportional vs. Equal Weights (2021-2024)")
+plt.xlabel("Date")
+plt.ylabel("Cumulative Returns")
+plt.legend()
+plt.grid()
+plt.show()
 
 plt.figure(figsize=(18,10))
 plt.scatter(simulatedRisks, simulatedReturns, c=sharpeRatios, cmap='viridis')
